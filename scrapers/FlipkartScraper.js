@@ -93,16 +93,27 @@ async function extractProducts(page, pageNo) {
       if (!img) return '';
       return img.getAttribute('src') || img.getAttribute('data-src') || '';
     };
-    return Array.from(document.querySelectorAll(selectors.item)).map((card) => ({
-      title: textOf(card, selectors.title),
-      price: textOf(card, selectors.price),
-      originalPrice: textOf(card, selectors.originalPrice),
-      rating: textOf(card, selectors.rating),
-      reviewCount: textOf(card, selectors.reviewCount),
-      productUrl: productUrl(card, selectors.productUrl),
-      imageUrl: imageUrl(card, selectors.imageUrl),
-      pageNo: currentPage,
-    })).filter((p) => p.title !== '' && p.productUrl.includes('/p/'));
+    // Bare brand tiles ("Samsung") carry no digits; the real name is the URL slug.
+    const slugTitle = (url) => {
+      const m = url.match(/\/([^/?#]+)\/p\//);
+      return m ? decodeURIComponent(m[1]).replace(/-/g, ' ') : '';
+    };
+    const isJunkTitle = (t) => !/\d/.test(t) && t.split(/\s+/).filter(Boolean).length <= 2;
+    return Array.from(document.querySelectorAll(selectors.item)).map((card) => {
+      const url = productUrl(card, selectors.productUrl);
+      let title = textOf(card, selectors.title);
+      if (isJunkTitle(title)) title = slugTitle(url) || title;
+      return {
+        title,
+        price: textOf(card, selectors.price),
+        originalPrice: textOf(card, selectors.originalPrice),
+        rating: textOf(card, selectors.rating),
+        reviewCount: textOf(card, selectors.reviewCount),
+        productUrl: url,
+        imageUrl: imageUrl(card, selectors.imageUrl),
+        pageNo: currentPage,
+      };
+    }).filter((p) => p.title !== '' && !isJunkTitle(p.title) && p.productUrl.includes('/p/'));
   }, SELECTORS, pageNo, BASE_URL);
 }
 

@@ -93,11 +93,15 @@ function saveToCsv(products, config) {
   }
 
   const allRows = [];
+  const seen = new Set();
   for (const query of Object.keys(byQuery)) {
     const result = comparePrices(byQuery[query], brand);
     result.pairs.forEach((pair) => {
       const row = rowFrom(pair);
-      if (row) allRows.push(row);
+      if (row && !seen.has(row)) {
+        seen.add(row);
+        allRows.push(row);
+      }
     });
   }
 

@@ -74,16 +74,28 @@ async function extractProducts(page, pageNo) {
       const img = el.querySelector(sel);
       return img ? (img.getAttribute('data-old-hires') || img.getAttribute('src') || '') : '';
     };
-    return Array.from(document.querySelectorAll(selectors.item)).map((card) => ({
-      title: textOfFirst(card, selectors.title),
-      price: textOfFirst(card, selectors.price),
-      originalPrice: textOfFirst(card, selectors.originalPrice),
-      rating: textOfFirst(card, selectors.rating),
-      reviewCount: textOfAll(card, selectors.reviewCount),
-      productUrl: productUrl(card, selectors.productUrl),
-      imageUrl: imageUrl(card, selectors.imageUrl),
-      pageNo: currentPage,
-    })).filter((p) => p.title !== '');
+    // Amazon renders a bare brand badge ("Apple") in h2 for variant tiles;
+    // the real product name lives in the URL slug: /Apple-iPhone-17e-256-GB/dp/...
+    const slugTitle = (url) => {
+      const m = url.match(/\/([^/?#]+)\/(?:dp|product-reviews)\//);
+      return m ? decodeURIComponent(m[1]).replace(/-/g, ' ') : '';
+    };
+    const isJunkTitle = (t) => !/\d/.test(t) && t.split(/\s+/).filter(Boolean).length <= 2;
+    return Array.from(document.querySelectorAll(selectors.item)).map((card) => {
+      const url = productUrl(card, selectors.productUrl);
+      let title = textOfFirst(card, selectors.title);
+      if (isJunkTitle(title)) title = slugTitle(url) || title;
+      return {
+        title,
+        price: textOfFirst(card, selectors.price),
+        originalPrice: textOfFirst(card, selectors.originalPrice),
+        rating: textOfFirst(card, selectors.rating),
+        reviewCount: textOfAll(card, selectors.reviewCount),
+        productUrl: url,
+        imageUrl: imageUrl(card, selectors.imageUrl),
+        pageNo: currentPage,
+      };
+    }).filter((p) => p.title !== '' && !isJunkTitle(p.title));
   }, SELECTORS, pageNo, BASE_URL);
 }
 
@@ -115,6 +127,7 @@ async function scrapeAmazon(browser, config) {
   if (!query) throw new Error('AmazonScraper: config.query is required');
 
   const products = [];
+  let emptyCount = 0;
   const page = await browser.newPage();
 
   try {
@@ -140,7 +153,15 @@ async function scrapeAmazon(browser, config) {
           break;
         }
 
-        products.push(...await extractProducts(page, pageNo));
+        const found = await extractProducts(page, pageNo);
+        if (found.length === 0) {
+          emptyCount += 1;
+        } else {
+          emptyCount = 0;
+          products.push(...found);
+        }
+        // Site ran out of results: stop, so pages can safely be set high.
+        if (emptyCount >= 2) break;
 
         if (pageNo < config.pages) {
           await randomDelay(config.minDelayMs, config.maxDelayMs);
