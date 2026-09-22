@@ -1,75 +1,115 @@
 const fs = require('fs');
 const path = require('path');
-const { success, warn } = require('./logger');
+const { comparePrices } = require('./compare');
+const { success, warn, error } = require('./logger');
 
-const HEADER = 'platform,query,category,title,price,originalPrice,rating,reviewCount,url,image,pageNo';
+const HEADER = 'sku,flipkart_price,amazon_price,flipkart_link,amazon_link';
+const FORMULA_LEAD = /^[\s=+\-@\t\r]/;
+const UNSAFE_FILENAME = /[<>:"/\\|?*\x00-\x1f]/g;
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+const BOM = '\uFEFF';
 
 function escapeCell(value) {
-  if (value === null || value === undefined) {
-    return '';
+  if (value === null || value === undefined) return '';
+  let text = String(value);
+  if (FORMULA_LEAD.test(text)) text = `'${text}`;
+  if (text.includes(',') || text.includes('"') || text.includes('\n') || text.includes('\r')) {
+    return `"${text.replaceAll('"', '""')}"`;
   }
-  const text = String(value);
-  const hasSpecialChar = text.includes(',') || text.includes('"') || text.includes('\n') || text.includes('\r');
-  if (!hasSpecialChar) {
-    return text;
-  }
-  const escapedQuotes = text.replaceAll('"', '""');
-  return `"${escapedQuotes}"`;
+  return text;
 }
 
-function rowFrom(product) {
+function rowFrom(pair) {
+  if (!pair || typeof pair !== 'object') return '';
   const cells = [
-    product.platform || '',
-    product.query || '',
-    product.category || '',
-    product.title || '',
-    product.price || '',
-    product.originalPrice || '',
-    product.rating || '',
-    product.reviewCount || '',
-    product.url || product.productUrl || '',
-    product.image || product.imageUrl || '',
-    product.pageNo || '',
+    pair.sku ?? '',
+    pair.flipkart ? pair.flipkart.price : '',
+    pair.amazon ? pair.amazon.price : '',
+    pair.flipkart ? pair.flipkart.productUrl : '',
+    pair.amazon ? pair.amazon.productUrl : '',
   ];
   return cells.map(escapeCell).join(',');
 }
 
 function formatTimestamp(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  const seconds = String(date.getSeconds()).padStart(2, '0');
-  return `${year}-${month}-${day}-${hours}${minutes}${seconds}`;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function slugify(text) {
+  const safe = String(text ?? '').trim().replace(/\s+/g, '-').replace(UNSAFE_FILENAME, '_').slice(0, 100) || 'products';
+  const stem = safe.split('-')[0] || 'products';
+  return WINDOWS_RESERVED.test(stem) ? `_${safe}` : safe;
 }
 
 function buildFilePath(config) {
   const outputDir = path.resolve(config.outputFolder);
-  fs.mkdirSync(outputDir, { recursive: true });
+  try {
+    fs.mkdirSync(outputDir, { recursive: true });
+  } catch (err) {
+    error(`outputHandler: failed to create ${outputDir} (${err.message})`);
+    throw err;
+  }
   const rawQuery = config.queries?.[0] || config.query || 'products';
-  const querySlug = rawQuery.trim().replace(/\s+/g, '-');
-  const timestamp = formatTimestamp(new Date());
-  const fileName = `${querySlug}-${timestamp}.csv`;
-  return path.join(outputDir, fileName);
+  const base = path.join(outputDir, `${slugify(rawQuery)}-${formatTimestamp(new Date())}.csv`);
+  // Append -N when two runs collide within the same second.
+  if (fs.existsSync(base)) {
+    let counter = 1;
+    let candidate;
+    do {
+      candidate = base.replace(/\.csv$/, `-${counter}.csv`);
+      counter += 1;
+    } while (fs.existsSync(candidate));
+    return candidate;
+  }
+  return base;
 }
 
 function saveToCsv(products, config) {
-  const filePath = buildFilePath(config);
-
-  if (products.length === 0) {
-    warn('No products scraped. Writing empty CSV with headers.');
+  let filePath;
+  try {
+    filePath = buildFilePath(config);
+  } catch (err) {
+    error(`outputHandler: cannot determine output path (${err.message})`);
+    return null;
   }
 
-  const rows = products.map(rowFrom);
-  const lines = [HEADER, ...rows];
-  const csvContent = `${lines.join('\n')}\n`;
+  if (!Array.isArray(products) || products.length === 0) {
+    warn('No products scraped. Writing empty CSV with headers.');
+    try {
+      fs.writeFileSync(filePath, `${BOM}${HEADER}\n`, 'utf-8');
+    } catch (err) {
+      error(`outputHandler: failed to write ${filePath} (${err.message})`);
+    }
+    return filePath;
+  }
 
-  fs.writeFileSync(filePath, csvContent, 'utf-8');
-  success(`Saved ${products.length} products to ${filePath}`);
+  const brand = config.queries?.[0] || config.brand || '';
+  const byQuery = {};
+  for (const product of products) {
+    if (!product) continue;
+    const key = product.query || '';
+    (byQuery[key] ??= []).push(product);
+  }
+
+  const allRows = [];
+  for (const query of Object.keys(byQuery)) {
+    const result = comparePrices(byQuery[query], brand);
+    result.pairs.forEach((pair) => {
+      const row = rowFrom(pair);
+      if (row) allRows.push(row);
+    });
+  }
+
+  const body = `${HEADER}\n${allRows.join('\n')}\n`;
+  try {
+    fs.writeFileSync(filePath, `${BOM}${body}`, 'utf-8');
+    success(`Saved ${allRows.length} SKU rows to ${filePath}`);
+  } catch (err) {
+    error(`outputHandler: failed to write ${filePath} (${err.message})`);
+  }
 
   return filePath;
 }
 
 module.exports = saveToCsv;
-module.exports.saveToCsv = saveToCsv;
