@@ -62,8 +62,8 @@ function buildUrl(query, pageNo, category) {
   return `${BASE_URL}/s?${params}`;
 }
 
-async function extractProducts(page, pageNo) {
-  return page.evaluate((selectors, currentPage, baseUrl) => {
+async function extractProducts(page, pageNo, needle) {
+  return page.evaluate((selectors, currentPage, baseUrl, needle) => {
     const textOfFirst = (el, sel) => el.querySelector(sel)?.textContent.trim() ?? '';
     const textOfAll = (el, sel) => Array.from(el.querySelectorAll(sel)).map((n) => n.textContent.trim()).filter(Boolean).join(' ');
     const productUrl = (el, sel) => {
@@ -74,17 +74,24 @@ async function extractProducts(page, pageNo) {
       const img = el.querySelector(sel);
       return img ? (img.getAttribute('data-old-hires') || img.getAttribute('src') || '') : '';
     };
-    // Amazon renders a bare brand badge ("Apple") in h2 for variant tiles;
-    // the real product name lives in the URL slug: /Apple-iPhone-17e-256-GB/dp/...
+    // Amazon renders a bare brand badge ("Apple") or marketing blurb without
+    // a model number in h2 for some tiles; the real product name is in the
+    // img alt text, then the URL slug: /Apple-iPhone-17e-256-GB/dp/...
     const slugTitle = (url) => {
       const m = url.match(/\/([^/?#]+)\/(?:dp|product-reviews)\//);
       return m ? decodeURIComponent(m[1]).replace(/-/g, ' ') : '';
     };
-    const isJunkTitle = (t) => !/\d/.test(t) && t.split(/\s+/).filter(Boolean).length <= 2;
+    const altTitle = (el) => el.querySelector('img[alt]')?.getAttribute('alt')?.trim() ?? '';
+    // A usable electronics title carries a model identifier (digits).
+    const usableTitle = (t) => /\d/.test(t);
+    // Both sites interleave "similar products" tiles from rival brands;
+    // drop anything whose title+url-path doesn't mention what we searched
+    // for. Match the path only — query params echo our own keyword back.
+    const matchesBrand = (t, u) => `${t} ${u.split('?')[0]}`.toLowerCase().replace(/[^a-z0-9]/g, '').includes(needle);
     return Array.from(document.querySelectorAll(selectors.item)).map((card) => {
       const url = productUrl(card, selectors.productUrl);
       let title = textOfFirst(card, selectors.title);
-      if (isJunkTitle(title)) title = slugTitle(url) || title;
+      if (!usableTitle(title)) title = altTitle(card) || slugTitle(url) || title;
       return {
         title,
         price: textOfFirst(card, selectors.price),
@@ -95,8 +102,8 @@ async function extractProducts(page, pageNo) {
         imageUrl: imageUrl(card, selectors.imageUrl),
         pageNo: currentPage,
       };
-    }).filter((p) => p.title !== '' && !isJunkTitle(p.title));
-  }, SELECTORS, pageNo, BASE_URL);
+    }).filter((p) => usableTitle(p.title) && p.productUrl !== '' && !/^sponsored/i.test(p.title) && matchesBrand(p.title, p.productUrl));
+  }, SELECTORS, pageNo, BASE_URL, needle);
 }
 
 async function warmup(page, url) {
@@ -153,7 +160,7 @@ async function scrapeAmazon(browser, config) {
           break;
         }
 
-        const found = await extractProducts(page, pageNo);
+        const found = await extractProducts(page, pageNo, query.toLowerCase().replace(/[^a-z0-9]/g, ''));
         if (found.length === 0) {
           emptyCount += 1;
         } else {

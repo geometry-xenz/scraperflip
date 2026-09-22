@@ -77,8 +77,8 @@ function validateConfig(config) {
   }
 }
 
-async function extractProducts(page, pageNo) {
-  return page.evaluate((selectors, currentPage, baseUrl) => {
+async function extractProducts(page, pageNo, needle) {
+  return page.evaluate((selectors, currentPage, baseUrl, brandNeedle) => {
     const textOf = (el, sel) => {
       const node = el.querySelector(sel);
       if (!node) return '';
@@ -93,16 +93,21 @@ async function extractProducts(page, pageNo) {
       if (!img) return '';
       return img.getAttribute('src') || img.getAttribute('data-src') || '';
     };
-    // Bare brand tiles ("Samsung") carry no digits; the real name is the URL slug.
+    // Bare brand tiles ("Samsung") or tiles without a model number fall back
+    // to the img alt text, then the URL slug.
+    const altTitle = (el) => el.querySelector('img[alt]')?.getAttribute('alt')?.trim() ?? '';
     const slugTitle = (url) => {
       const m = url.match(/\/([^/?#]+)\/p\//);
       return m ? decodeURIComponent(m[1]).replace(/-/g, ' ') : '';
     };
-    const isJunkTitle = (t) => !/\d/.test(t) && t.split(/\s+/).filter(Boolean).length <= 2;
+    const usableTitle = (t) => /\d/.test(t);
+    // Both sites interleave "similar products" tiles from rival brands.
+    // Match the URL path only — query params echo our own keyword back.
+    const matchesBrand = (t, u) => `${t} ${u.split('?')[0]}`.toLowerCase().replace(/[^a-z0-9]/g, '').includes(brandNeedle);
     return Array.from(document.querySelectorAll(selectors.item)).map((card) => {
       const url = productUrl(card, selectors.productUrl);
       let title = textOf(card, selectors.title);
-      if (isJunkTitle(title)) title = slugTitle(url) || title;
+      if (!usableTitle(title)) title = altTitle(card) || slugTitle(url) || title;
       return {
         title,
         price: textOf(card, selectors.price),
@@ -113,8 +118,8 @@ async function extractProducts(page, pageNo) {
         imageUrl: imageUrl(card, selectors.imageUrl),
         pageNo: currentPage,
       };
-    }).filter((p) => p.title !== '' && !isJunkTitle(p.title) && p.productUrl.includes('/p/'));
-  }, SELECTORS, pageNo, BASE_URL);
+    }).filter((p) => usableTitle(p.title) && p.productUrl.includes('/p/') && !/^sponsored/i.test(p.title) && matchesBrand(p.title, p.productUrl));
+  }, SELECTORS, pageNo, BASE_URL, needle);
 }
 
 async function warmup(page, url) {
@@ -173,7 +178,7 @@ async function scrapeFlipkart(browser, config) {
           break;
         }
 
-        const found = await extractProducts(page, pageNo);
+        const found = await extractProducts(page, pageNo, query.toLowerCase().replace(/[^a-z0-9]/g, ''));
         if (found.length === 0) {
           emptyCount += 1;
         } else {
