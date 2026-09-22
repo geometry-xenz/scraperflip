@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parsePrice, comparePrices, matchSku } = require('../utils/compare');
+const { parsePrice, comparePrices, matchSku, versionsConflict } = require('../utils/compare');
 
 test('parsePrice handles currency symbol and commas', () => {
   assert.equal(parsePrice('₹64,999'), 64999);
@@ -45,4 +45,22 @@ test('comparePrices matches SKUs across platforms', () => {
 
 test('matchSku returns 0 when one title has no model tokens', () => {
   assert.equal(matchSku('apple', 'Random Widget', 'Apple iPhone 16 128 GB'), 0);
+});
+
+test('versionsConflict vetoes different model series', () => {
+  assert.equal(versionsConflict('iPhone 18 Pro (256 GB)', 'Apple iPhone 15 (Black, 256 GB)'), true);
+  assert.equal(versionsConflict('iPhone 16 128 GB White', 'Apple iPhone 16 (White, 256 GB)'), false);
+  assert.equal(versionsConflict('iPhone Air 256 GB', 'Apple iPhone Air (256 GB)'), false);
+  assert.equal(versionsConflict('iPhone Air 256 GB Promotion', 'Apple iPhone 16 (Ultramarine, 256 GB)'), true);
+  assert.equal(versionsConflict('iPhone 16 Pro Max', 'Apple iPhone 15 (Pro, 256 GB)'), true);
+  assert.equal(versionsConflict('iPhone 16 Plus (Pink, 128 GB)', 'Apple iPhone 16 (White, 128 GB)'), false);
+});
+
+test('comparePrices never pairs different series', () => {
+  const products = [
+    { platform: 'Amazon', title: 'iPhone 18 Pro Max (256 GB) - Silver', price: '₹1,79,900', productUrl: 'https://amazon.in/a1' },
+    { platform: 'Flipkart', title: 'Apple iPhone 15 (Black, 256 GB)', price: '₹68,900', productUrl: 'https://flipkart.com/f1' },
+  ];
+  const result = comparePrices(products, 'iphone');
+  assert.equal(result.matched.length, 0);
 });

@@ -97,6 +97,9 @@ function saveToCsv(products, config) {
   for (const query of Object.keys(byQuery)) {
     const result = comparePrices(byQuery[query], brand);
     result.pairs.forEach((pair) => {
+      // Quality gate: a price-comparison row needs at least one price.
+      const hasPrice = (pair.flipkart?.price || pair.amazon?.price);
+      if (!hasPrice) return;
       const row = rowFrom(pair);
       if (row && !seen.has(row)) {
         seen.add(row);

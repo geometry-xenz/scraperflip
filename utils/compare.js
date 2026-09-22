@@ -64,6 +64,31 @@ function matchSku(brand, aTitle, bTitle) {
   return jaccard(aTokens, bTokens);
 }
 
+// Model series: 1-2 digit runs (iPhone 15/16/18, Galaxy S24) plus name-words
+// (Air, Plus, Pro...). Storage/RAM (128, 256, 512) are 3+ digits and ignored.
+const SERIES_WORDS = new Set(['air', 'plus', 'pro', 'max', 'ultra', 'lite', 'mini', 'se', 'fe', 'neo', 'fold', 'flip']);
+
+function seriesParts(title) {
+  const toks = normalizeTitle(title).split(' ');
+  return {
+    vers: new Set(toks.filter((t) => /^\d{1,2}$/.test(t))),
+    words: new Set(toks.filter((t) => SERIES_WORDS.has(t))),
+  };
+}
+
+function versionsConflict(aTitle, bTitle) {
+  const a = seriesParts(aTitle);
+  const b = seriesParts(bTitle);
+  const aHas = a.vers.size > 0 || a.words.size > 0;
+  const bHas = b.vers.size > 0 || b.words.size > 0;
+  if (!aHas || !bHas) return false;
+  // One side names its series by number (16), the other by word (Air): different lines.
+  if (!(a.vers.size && b.vers.size) && !(a.words.size && b.words.size)) return true;
+  if (a.vers.size && b.vers.size && ![...a.vers].some((v) => b.vers.has(v))) return true;
+  if (a.words.size && b.words.size && ![...a.words].some((w) => b.words.has(w))) return true;
+  return false;
+}
+
 function platformKey(product) {
   if (!product) return '';
   return String(product.platform || '').toLowerCase();
@@ -108,6 +133,7 @@ function comparePrices(products, brand) {
     let bestScore = 0;
     for (let i = 0; i < flipkartItems.length; i += 1) {
       if (usedFlipkart.has(i)) continue;
+      if (versionsConflict(amazonProduct.title, flipkartItems[i].title)) continue;
       const score = matchSku(brand, amazonProduct.title, flipkartItems[i].title);
       if (score > bestScore) {
         bestScore = score;
@@ -203,4 +229,5 @@ module.exports = {
   comparePrices,
   printComparison,
   matchSku,
+  versionsConflict,
 };
