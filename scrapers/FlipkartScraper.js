@@ -2,9 +2,11 @@
 
 const CATEGORIES = require('../categories');
 const { randomDelay } = require('../utils/delay');
-const { warn } = require('../utils/logger');
+const { warn, error } = require('../utils/logger');
 
 const BASE_URL = 'https://www.flipkart.com';
+const BLOCKED_TYPES = new Set(['image', 'font', 'media']);
+const BLOCKED_DOMAINS = ['google-analytics', 'doubleclick', 'facebook'];
 
 const SELECTORS = {
   item: 'div[data-id]',
@@ -17,6 +19,35 @@ const SELECTORS = {
   imageUrl: 'img.DByuf4, img._396cs4, img',
   loginClose: 'button._2KpZ6l._2doB4z, span._30XB9F, button[class*="_2doB4z"]',
 };
+
+async function blockRequests(page) {
+  await page.setRequestInterception(true);
+  page.on('request', (interceptedRequest) => {
+    const resourceType = interceptedRequest.resourceType();
+    const url = interceptedRequest.url();
+    const isBlockedDomain = BLOCKED_DOMAINS.some((domain) => url.includes(domain));
+    if (BLOCKED_TYPES.has(resourceType) || isBlockedDomain) {
+      interceptedRequest.abort();
+      return;
+    }
+    interceptedRequest.continue();
+  });
+}
+
+async function looksBlocked(page) {
+  const hasUnclosableModal = await page.evaluate((selector) => {
+    const modal = document.querySelector('div._2QfC02, div._3Njdz7');
+    const closeButton = document.querySelector(selector);
+    return Boolean(modal && !closeButton);
+  }, SELECTORS.loginClose);
+
+  if (hasUnclosableModal) {
+    return true;
+  }
+
+  const cardNode = await page.$(SELECTORS.item);
+  return !cardNode;
+}
 
 function getSearchTerms(query, category) {
   const categoryEntry = CATEGORIES[category] || CATEGORIES.all;
@@ -103,6 +134,8 @@ async function scrapeFlipkart(browser, config) {
   const page = await browser.newPage();
 
   try {
+    await blockRequests(page);
+
     for (let pageNo = 1; pageNo <= config.pages; pageNo += 1) {
       try {
         const pageUrl = buildUrl(query, pageNo, targetCategory);
@@ -117,6 +150,12 @@ async function scrapeFlipkart(browser, config) {
           await page.waitForSelector(SELECTORS.item, { timeout: 10000 });
         } catch {
           // Empty page or timed out card rendering
+        }
+
+        const isBlocked = await looksBlocked(page);
+        if (isBlocked && pageNo === 1) {
+          error('Flipkart blocked the request or presented an unclosable challenge. Fix: wait a few minutes, lower --pages, or run with --headless false.');
+          break;
         }
 
         const pageProducts = await extractProducts(page, pageNo);

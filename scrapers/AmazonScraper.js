@@ -2,8 +2,11 @@
 
 const CATEGORIES = require('../categories');
 const { randomDelay } = require('../utils/delay');
+const { error } = require('../utils/logger');
 
 const BASE_URL = 'https://www.amazon.in';
+const BLOCKED_TYPES = new Set(['image', 'font', 'media']);
+const BLOCKED_DOMAINS = ['google-analytics', 'doubleclick', 'facebook'];
 
 const SELECTORS = {
   item: '[data-component-type="s-search-result"]',
@@ -15,6 +18,29 @@ const SELECTORS = {
   productUrl: 'h2 a[href]',
   imageUrl: 'img',
 };
+
+async function blockRequests(page) {
+  await page.setRequestInterception(true);
+  page.on('request', (interceptedRequest) => {
+    const resourceType = interceptedRequest.resourceType();
+    const url = interceptedRequest.url();
+    const isBlockedDomain = BLOCKED_DOMAINS.some((domain) => url.includes(domain));
+    if (BLOCKED_TYPES.has(resourceType) || isBlockedDomain) {
+      interceptedRequest.abort();
+      return;
+    }
+    interceptedRequest.continue();
+  });
+}
+
+async function looksBlocked(page) {
+  return page.evaluate(() => {
+    const hasCaptchaForm = Boolean(document.querySelector('form[action*="validateCaptcha"]'));
+    const bodyText = document.body ? document.body.innerText : '';
+    const hasCaptchaText = bodyText.includes('Enter the characters you see below');
+    return hasCaptchaForm || hasCaptchaText;
+  });
+}
 
 function getCategoryIndex(category) {
   const categoryEntry = CATEGORIES[category] || CATEGORIES.all;
@@ -89,12 +115,20 @@ async function scrapeAmazon(browser, config) {
   const page = await browser.newPage();
 
   try {
+    await blockRequests(page);
+
     for (let pageNo = 1; pageNo <= config.pages; pageNo += 1) {
       const pageUrl = buildUrl(query, pageNo, targetCategory);
       await page.goto(pageUrl, {
         waitUntil: 'domcontentloaded',
         timeout: 30000,
       });
+
+      const isBlocked = await looksBlocked(page);
+      if (isBlocked) {
+        error('Amazon blocked the request (CAPTCHA detected). Fix: wait a few minutes, lower --pages, or run with --headless false.');
+        break;
+      }
 
       try {
         await page.waitForSelector(SELECTORS.item, { timeout: 15000 });
