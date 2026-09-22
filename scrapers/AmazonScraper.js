@@ -66,9 +66,14 @@ async function extractProducts(page, pageNo, needle) {
   return page.evaluate((selectors, currentPage, baseUrl, needle) => {
     const textOfFirst = (el, sel) => el.querySelector(sel)?.textContent.trim() ?? '';
     const textOfAll = (el, sel) => Array.from(el.querySelectorAll(sel)).map((n) => n.textContent.trim()).filter(Boolean).join(' ');
+    const rawHref = (el, sel) => el.querySelector(sel)?.getAttribute('href') ?? '';
+    const absolute = (href) => (href ? (href.startsWith('http') ? href : `${baseUrl}${href}`) : '');
+    // Canonical /dp/<ASIN> link: the raw href carries 400+ chars of
+    // session-scoped tracking tokens (dib, qid, ref) that rot within hours.
     const productUrl = (el, sel) => {
-      const href = el.querySelector(sel)?.getAttribute('href') ?? '';
-      return href ? (href.startsWith('http') ? href : `${baseUrl}${href}`) : '';
+      const url = absolute(rawHref(el, sel));
+      const asin = url.match(/\/dp\/([A-Z0-9]{10})/);
+      return asin ? `${baseUrl}/dp/${asin[1]}` : url;
     };
     const imageUrl = (el, sel) => {
       const img = el.querySelector(sel);
@@ -77,8 +82,8 @@ async function extractProducts(page, pageNo, needle) {
     // Amazon renders a bare brand badge ("Apple") or marketing blurb without
     // a model number in h2 for some tiles; the real product name is in the
     // img alt text, then the URL slug: /Apple-iPhone-17e-256-GB/dp/...
-    const slugTitle = (url) => {
-      const m = url.match(/\/([^/?#]+)\/(?:dp|product-reviews)\//);
+    const slugTitle = (href) => {
+      const m = href.match(/\/([^/?#]+)\/(?:dp|product-reviews)\//);
       return m ? decodeURIComponent(m[1]).replace(/-/g, ' ') : '';
     };
     const altTitle = (el) => el.querySelector('img[alt]')?.getAttribute('alt')?.trim() ?? '';
@@ -91,7 +96,7 @@ async function extractProducts(page, pageNo, needle) {
     return Array.from(document.querySelectorAll(selectors.item)).map((card) => {
       const url = productUrl(card, selectors.productUrl);
       let title = textOfFirst(card, selectors.title);
-      if (!usableTitle(title)) title = altTitle(card) || slugTitle(url) || title;
+      if (!usableTitle(title)) title = altTitle(card) || slugTitle(absolute(rawHref(card, selectors.productUrl))) || title;
       return {
         title,
         price: textOfFirst(card, selectors.price),

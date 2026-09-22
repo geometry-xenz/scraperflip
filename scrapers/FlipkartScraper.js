@@ -86,7 +86,10 @@ async function extractProducts(page, pageNo, needle) {
     };
     const productUrl = (el, sel) => {
       const href = el.querySelector(sel)?.getAttribute('href') ?? '';
-      return href ? (href.startsWith('http') ? href : `${baseUrl}${href}`) : '';
+      if (!href) return '';
+      // Path only: the query string is session-scoped tracking (iid, qH, ssid).
+      const full = href.startsWith('http') ? href : `${baseUrl}${href}`;
+      return full.split('?')[0];
     };
     const imageUrl = (el, sel) => {
       const img = el.querySelector(sel);
